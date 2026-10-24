@@ -55,8 +55,9 @@ static int hexval(char c)
     return -1;
 }
 
-/* pattern like "8B 3D ? ? ? ? 85 FF" ; returns first match or NULL */
-static BYTE *find_pattern(const char *pat)
+/* pattern like "8B 3D ? ? ? ? 85 FF" ; returns the nth match (0 = first) or NULL,
+   and the total number of matches in *count if count isn't NULL */
+static BYTE *find_pattern_n(const char *pat, int nth, int *count)
 {
     BYTE bytes[64]; BYTE mask[64]; int n = 0;
     for (const char *p = pat; *p && n < 64;) {
@@ -66,13 +67,20 @@ static BYTE *find_pattern(const char *pat)
         if (hi < 0 || lo < 0) return NULL;
         bytes[n] = (BYTE)(hi * 16 + lo); mask[n++] = 1; p += 2;
     }
+    BYTE *hit = NULL; int found = 0;
     for (DWORD i = 0; i + n <= g_size; i++) {
         int k = 0;
         while (k < n && (!mask[k] || g_base[i + k] == bytes[k])) k++;
-        if (k == n) return g_base + i;
+        if (k == n) {
+            if (found == nth) hit = g_base + i;
+            found++;
+            if (!count && hit) break;
+        }
     }
-    return NULL;
+    if (count) *count = found;
+    return hit;
 }
+static BYTE *find_pattern(const char *pat) { return find_pattern_n(pat, 0, NULL); }
 
 /* ------------------------------------------------------------ script commands */
 static DWORD  *g_pTableSize;   /* rage::scrEngine table size   */
@@ -90,8 +98,12 @@ typedef struct {
 } NCtx;
 typedef void (__cdecl *NHandler)(NCtx *);
 
+typedef void *(__stdcall *GetNativeAddressFn)(DWORD hash);
+static GetNativeAddressFn g_getNativeAddress;
+
 static NHandler get_handler(DWORD hash)
 {
+    if (g_getNativeAddress) return (NHandler)g_getNativeAddress(hash);
     if (!g_pTableSize || !g_ppTable) return NULL;
     DWORD size = *g_pTableSize;
     DWORD *tbl = *g_ppTable;
@@ -429,21 +441,25 @@ static DWORD WINAPI init_thread(LPVOID unused)
     g_size = nt->OptionalHeader.SizeOfImage;
 
     BYTE *p;
-    /* 1.2.x first, then 1.0.x / 1.1.x */
-    if ((p = find_pattern("8B 3D ? ? ? ? 85 FF 75 04 33 C0 5F C3")) ||
-        (p = find_pattern("8B 35 ? ? ? ? 85 F6 75 06 33 C0 5E C2 04 00 53 57 8B 7C 24 10")))
+    int cnt = 0;
+    /* same lookups FusionFix does, in the same order */
+    p = find_pattern_n("56 8B 35 ? ? ? ? 85 F6 75 06", 1, &cnt);
+    plog("lookup function pattern: %d match(es)", cnt);
+    if (cnt == 2 && p) g_getNativeAddress = (GetNativeAddressFn)p;
+    if ((p = find_pattern("8B 35 ? ? ? ? 85 F6 75 06 33 C0 5E C2 04 00 53 57 8B 7C 24 10")) ||
+        (p = find_pattern("8B 3D ? ? ? ? 85 FF 75 04 33 C0 5F C3")))
         g_pTableSize = *(DWORD **)(p + 2);
-    if ((p = find_pattern("8B 1D ? ? ? ? 8B CE 8B 04 D3 3B C6 74 17 85 C0")) ||
-        (p = find_pattern("8B 1D ? ? ? ? 8B CF 8B 04 D3 3B C7 74 19 8D 64 24 00 85 C0")))
+    if ((p = find_pattern("8B 1D ? ? ? ? 8B CF 8B 04 D3 3B C7 74 19 8D 64 24 00 85 C0")) ||
+        (p = find_pattern("8B 1D ? ? ? ? 8B CE 8B 04 D3 3B C6 74 17 85 C0")))
         g_ppTable = *(DWORD ***)(p + 2);
     if ((p = find_pattern("0F B6 0D ? ? ? ? 0F B6 C0 0B C1"))) {
         g_pUserPause = *(BYTE **)(p + 3); g_pScriptPause = *(BYTE **)(p + 15);
     } else if ((p = find_pattern("0F B6 0D ? ? ? ? 0F B6 15 ? ? ? ? 33 C0 0B C1"))) {
         g_pUserPause = *(BYTE **)(p + 3); g_pScriptPause = *(BYTE **)(p + 10);
     }
-    plog("command table: size var %p, table var %p, pause flags %p %p",
-         g_pTableSize, g_ppTable, g_pUserPause, g_pScriptPause);
-    if (!g_pTableSize || !g_ppTable) { plog("ERROR: this game version isn't supported (command table not found)"); return 0; }
+    plog("lookup function %p, command table: size var %p, table var %p, pause flags %p %p",
+         g_getNativeAddress, g_pTableSize, g_ppTable, g_pUserPause, g_pScriptPause);
+    if (!g_getNativeAddress && (!g_pTableSize || !g_ppTable)) { plog("ERROR: this game version isn't supported (command table not found)"); return 0; }
 
     HWND w = NULL;
     for (int tries = 0; tries < 1200 && !w; tries++) {   /* up to 10 minutes */
@@ -456,7 +472,14 @@ static DWORD WINAPI init_thread(LPVOID unused)
     g_unicode = IsWindowUnicode(w);
     g_origProc = (WNDPROC)(g_unicode ? SetWindowLongPtrW(w, GWLP_WNDPROC, (LONG_PTR)HookProc)
                                      : SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)HookProc));
-    plog("hooked game window (class %s, %s) - ready", cls, g_unicode ? "unicode" : "ansi");
+    plog("hooked game window (class %s, %s)", cls, g_unicode ? "unicode" : "ansi");
+    for (int tries = 0; tries < 600; tries++) {   /* the table is filled while the game starts */
+        if (get_handler(GET_PLAYER_ID)) break;
+        Sleep(500);
+    }
+    plog("self-test: GET_PLAYER_ID %s, LibertyCityPlates commands %s",
+         get_handler(GET_PLAYER_ID) ? "found" : "NOT found", get_handler(LCP_TEXT_0123) ? "found" : "NOT found");
+    plog("ready");
     return 0;
 }
 
@@ -473,7 +496,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID res)
         wsprintfA(g_logPath, "%s\\PlateChanger.log", g_dir);
         wsprintfA(g_iniPath, "%s\\PlateChanger.ini", g_dir);
         DeleteFileA(g_logPath);
-        plog("PlateChanger 1.0 loaded");
+        plog("PlateChanger 1.0.1 loaded");
         HANDLE t = CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }
