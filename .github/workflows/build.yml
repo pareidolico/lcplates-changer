@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ziglang pefile
+      - run: ./build.sh
+      - name: Check the plugin
+        run: |
+          python - <<'PY'
+          import pefile
+          pe = pefile.PE("build/PlateChanger.asi")
+          assert pe.FILE_HEADER.Machine == 0x14c, "not 32-bit x86"
+          assert pe.is_dll(), "not a DLL"
+          dlls = sorted(e.dll.decode().lower() for e in pe.DIRECTORY_ENTRY_IMPORT)
+          assert dlls == ["gdi32.dll", "kernel32.dll", "user32.dll"], dlls
+          print("ok:", dlls)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlateChanger
+          path: |
+            build/PlateChanger.asi
+            PlateChanger.ini
