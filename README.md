@@ -1,6 +1,6 @@
 # lcplates-changer
 
-An in-game plate changer for **[LibertyCityPlates](https://github.com/ImpossibleEchoes/LibertyCityPlates)** in GTA IV. Press **F11** in a car, or after getting out of one, type a new plate in-game, and it's on the car straight away.
+An in-game plate changer for **[LibertyCityPlates](https://github.com/ImpossibleEchoes/LibertyCityPlates)** in GTA IV. Press **F11** in a car, or after getting out of one, type a new plate in-game, and it's on the car straight away. Plates you set stay on your saved cars.
 
 It's a small `.asi` plugin. It works on Complete Edition 1.2.0.59 with [FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix), and should also work on 1.0.x/1.1.x.
 
@@ -24,11 +24,17 @@ You need LibertyCityPlates (it provides the plate commands this plugin uses) and
 | Home / End | Next / previous font (`lettersN`) |
 | Enter or F11 | Done |
 
-LibertyCityPlates can set a car's picture and font but can't report them, so the prompt shows `-` until you change one, and the first press starts at 0 (Page Up) or at the highest number (Page Down). For the same reason, changes can't be undone. To go back, change them again.
+Picking a picture also gives the text that picture's preset size, position, colour and font, taken from the first line in your `vehicles.ide` that uses it, so it lines up like the plates the mod hands out. A font you pick with Home/End wins over the preset.
 
-The text keeps the size and position of the car's original plate type, so a picture with a different layout may need its own `vehicles.ide` entry for perfect placement.
+LibertyCityPlates can set a car's picture and font but can't report them, so for a car you haven't edited before the prompt shows `-` until you change one. The first press starts at 0 (Page Up) or at the highest number (Page Down). Changes can't be undone. To go back, change them again.
 
-The new plate stays until the car leaves the world (it streams out, you reload, or it's re-created from a garage). After that LibertyCityPlates picks a plate from `vehicles.ide` again, as usual.
+## Your saved cars keep their plates
+
+Every car you edit is remembered in `PlateChanger.plates` (next to the `.asi`), with its model, its colours and the spots where it has stood parked for a few seconds. When the game creates a car with the same model and colours within a few metres of one of those spots, the plate goes back on. That's what happens when you load a save, or come back to your safehouse and the parked cars reappear.
+
+- Park the car (stop for about 4 seconds) where you save, so the spot is known. Editing it there also counts.
+- A respray changes the colours, so the car won't be recognised. Edit it again after a respray.
+- Up to 64 cars are remembered. When it's full, the oldest is forgotten. Delete `PlateChanger.plates` to start over.
 
 ## Settings
 
@@ -39,20 +45,25 @@ The new plate stays until the car leaves the world (it streams out, you reload, 
 Key=F11
 MaxPicture=24
 MaxFont=4
+RememberPlates=1
+PlatesIde=
 ```
 
 - `Key` accepts `F1`–`F12`, a single letter or digit, and optional `Ctrl+`, `Alt+`, `Shift+` (e.g. `Shift+F11`). Liberty's Legacy trainer also uses F11, so change it if both react.
 - `MaxPicture` and `MaxFont` are the highest picture and font numbers in your `libertycityplates.wtd`. Stepping wraps around between 0 and these.
+- `RememberPlates=0` turns off remembering plates.
+- `PlatesIde` points to the `vehicles.ide` with your `license_plates` presets, relative to the game folder. Blank tries `update\common\data\vehicles.ide`, then `common\data\vehicles.ide`.
 
 ## Troubleshooting
 
-The plugin writes `PlateChanger.log` next to itself. It records whether it found the game's script command table, the game window and LibertyCityPlates. Open an issue with that log if the hotkey does nothing.
+The plugin writes `PlateChanger.log` next to itself. It records whether it found the game's script command table, the vehicle pool, the game window, LibertyCityPlates and your `vehicles.ide` presets, and each time it puts a remembered plate back on a car. Open an issue with that log if the hotkey does nothing.
 
 ## How it works
 
 - It finds the game's script command table with the same byte patterns FusionFix uses for 1.0.x and 1.2.x, and calls commands by hash.
 - It hooks the game window's message handler and polls the keys from a timer there, on the game's main thread between frames. Typing happens in-game, with no extra windows, so it works in fullscreen too.
-- It calls LibertyCityPlates' own script commands (`SET_CAR_LICENSE_PLATE_TEXT_0123` = `0x09DED943` and friends, from its source) to set the text, its length, the plate picture and the font.
+- For remembered plates it walks the game's vehicle pool (pattern from LibertyCityPlates' Complete Edition code, with the 1.0.x one as fallback) about four times a second, and after any pause or load it checks every car again.
+- It calls LibertyCityPlates' own script commands (`SET_CAR_LICENSE_PLATE_TEXT_0123` = `0x09DED943` and friends, from its source) to set the text, its length, the plate picture, the font, and the text size, position and colour.
 - It's plain Win32 with no C runtime, so it depends only on `kernel32`, `user32` and `gdi32`.
 
 ## Building
