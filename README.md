@@ -20,13 +20,13 @@ You need LibertyCityPlates (it provides the plate commands this plugin uses) and
 |---|---|
 | `A`–`Z`, `0`–`9`, Space | Type the plate text, up to 12 characters (numpad digits work too, numpad `*` is the state emblem) |
 | Backspace | Delete the last character |
-| Page Up / Page Down | Next / previous plate picture (`plateN` in `libertycityplates.wtd`) |
-| Home / End | Next / previous font (`lettersN`) |
+| Page Up / Page Down | Next / previous plate picture (`plateN` in `libertycityplates.wtd`) out of the ones your `vehicles.ide` uses |
+| Home / End | Next / previous font (`lettersN`), likewise |
 | Enter or F11 | Done |
 
 Picking a picture also gives the text that picture's preset size, position, colour and font, taken from the first line in your `vehicles.ide` that uses it, so it lines up like the plates the mod hands out. A font you pick with Home/End wins over the preset.
 
-LibertyCityPlates can set a car's picture and font but can't report them, so for a car you haven't edited before the prompt shows `-` until you change one. The first press starts at 0 (Page Up) or at the highest number (Page Down). Changes can't be undone. To go back, change them again.
+LibertyCityPlates can set a car's picture and font but can't report them, so for a car you haven't edited before the prompt shows `-` until you change one. The first press starts at the first (Page Up) or last (Page Down) picture in the list. Changes can't be undone. To go back, change them again.
 
 ## Your saved cars keep their plates
 
@@ -43,14 +43,14 @@ Every car you edit is remembered in `PlateChanger.plates` (next to the `.asi`), 
 ```ini
 [PlateChanger]
 Key=F11
-MaxPicture=24
-MaxFont=4
+MaxPicture=
+MaxFont=
 RememberPlates=1
 PlatesIde=
 ```
 
 - `Key` accepts `F1`–`F12`, a single letter or digit, and optional `Ctrl+`, `Alt+`, `Shift+` (e.g. `Shift+F11`). Liberty's Legacy trainer also uses F11, so change it if both react.
-- `MaxPicture` and `MaxFont` are the highest picture and font numbers in your `libertycityplates.wtd`. Stepping wraps around between 0 and these.
+- `MaxPicture` and `MaxFont`: leave them blank and Page Up/Down and Home/End step through exactly the plate pictures and fonts your `vehicles.ide` `license_plates` lines use, so plates you've added are picked up automatically and stock setups only see the stock ones. Set a number to step through 0 up to it instead (for textures that no plate line uses yet).
 - `RememberPlates=0` turns off remembering plates.
 - `PlatesIde` points to the `vehicles.ide` with your `license_plates` presets, relative to the game folder. Blank tries `update\common\data\vehicles.ide`, then `common\data\vehicles.ide`.
 

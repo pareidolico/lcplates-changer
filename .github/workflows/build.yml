@@ -2,7 +2,12 @@ name: build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: write   # lets tag builds publish a release
 
 jobs:
   build:
@@ -33,3 +38,15 @@ jobs:
           path: |
             build/PlateChanger.asi
             PlateChanger.ini
+      - name: Package release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p dist/PlateChanger
+          cp build/PlateChanger.asi PlateChanger.ini README.md LICENSE dist/PlateChanger/
+          cd dist && zip -r "PlateChanger-${GITHUB_REF_NAME}.zip" PlateChanger
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PlateChanger-${{ github.ref_name }}.zip
+          body_path: RELEASE_NOTES.md

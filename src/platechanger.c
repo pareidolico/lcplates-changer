@@ -28,7 +28,7 @@
 void *memset(void *d, int c, unsigned int n) { unsigned char *p = d; while (n--) *p++ = (unsigned char)c; return d; }
 void *memcpy(void *d, const void *s, unsigned int n) { unsigned char *a = d; const unsigned char *b = s; while (n--) *a++ = *b++; return d; }
 
-#define VERSION "1.3"
+#define VERSION "1.4"
 
 /* ------------------------------------------------------------ logging */
 static char g_dir[MAX_PATH];
@@ -265,7 +265,7 @@ static Pool *veh_pool(void)
 /* ------------------------------------------------------------ settings */
 static UINT g_vk = VK_F11;
 static int g_needShift, g_needCtrl, g_needAlt;
-static int g_maxPic = 24, g_maxFont = 4;
+static int g_maxPic = -1, g_maxFont = -1;   /* -1 = automatic, from vehicles.ide */
 static int g_remember = 1;
 static char g_ideSetting[MAX_PATH];
 
@@ -295,15 +295,16 @@ static void load_settings(void)
         }
         p++;
     }
-    g_maxPic = (int)GetPrivateProfileIntA("PlateChanger", "MaxPicture", 24, g_iniPath);
-    g_maxFont = (int)GetPrivateProfileIntA("PlateChanger", "MaxFont", 4, g_iniPath);
-    if (g_maxPic < 0 || g_maxPic > 253) g_maxPic = 24;
-    if (g_maxFont < 0 || g_maxFont > 253) g_maxFont = 4;
+    char v[16];
+    GetPrivateProfileStringA("PlateChanger", "MaxPicture", "", v, sizeof(v), g_iniPath);
+    if (!v[0] || !parse_int(v, &g_maxPic) || g_maxPic < 0 || g_maxPic > 253) g_maxPic = -1;
+    GetPrivateProfileStringA("PlateChanger", "MaxFont", "", v, sizeof(v), g_iniPath);
+    if (!v[0] || !parse_int(v, &g_maxFont) || g_maxFont < 0 || g_maxFont > 253) g_maxFont = -1;
     g_remember = (int)GetPrivateProfileIntA("PlateChanger", "RememberPlates", 1, g_iniPath);
     GetPrivateProfileStringA("PlateChanger", "PlatesIde", "", g_ideSetting, sizeof(g_ideSetting), g_iniPath);
-    plog("hotkey: %s%s%svk 0x%02X, pictures 0-%d, fonts 0-%d, remember plates %s",
+    plog("hotkey: %s%s%svk 0x%02X, remember plates %s",
          g_needCtrl ? "Ctrl+" : "", g_needAlt ? "Alt+" : "", g_needShift ? "Shift+" : "", g_vk,
-         g_maxPic, g_maxFont, g_remember ? "on" : "off");
+         g_remember ? "on" : "off");
 }
 
 /* ------------------------------------------------------------ plate styles from vehicles.ide */
@@ -370,6 +371,30 @@ static void load_styles(void)
     }
     HeapFree(GetProcessHeap(), 0, buf);
     plog("plate styles: %d pictures from %s", count, path);
+}
+
+/* the pictures and fonts Page Up/Down and Home/End step through */
+static BYTE g_picList[254], g_fontList[254];
+static int g_npic, g_nfont;
+
+static void build_lists(void)
+{
+    BYTE usedFont[254] = { 0 };
+    g_npic = g_nfont = 0;
+    if (g_maxPic >= 0) for (int i = 0; i <= g_maxPic; i++) g_picList[g_npic++] = (BYTE)i;
+    else for (int i = 0; i < 254; i++) if (g_styles[i].have) g_picList[g_npic++] = (BYTE)i;
+    if (!g_npic) for (int i = 0; i <= 19; i++) g_picList[g_npic++] = (BYTE)i;   /* stock LibertyCityPlates */
+
+    if (g_maxFont >= 0) for (int i = 0; i <= g_maxFont; i++) g_fontList[g_nfont++] = (BYTE)i;
+    else {
+        for (int i = 0; i < 254; i++) if (g_styles[i].have && g_styles[i].font >= 0 && g_styles[i].font < 254) usedFont[g_styles[i].font] = 1;
+        for (int i = 0; i < 254; i++) if (usedFont[i]) g_fontList[g_nfont++] = (BYTE)i;
+    }
+    if (!g_nfont) for (int i = 0; i <= 4; i++) g_fontList[g_nfont++] = (BYTE)i;    /* stock LibertyCityPlates */
+
+    plog("pictures: %d (%s, %d to %d), fonts: %d (%s, %d to %d)",
+         g_npic, g_maxPic >= 0 ? "MaxPicture" : "from vehicles.ide", g_picList[0], g_picList[g_npic - 1],
+         g_nfont, g_maxFont >= 0 ? "MaxFont" : "from vehicles.ide", g_fontList[0], g_fontList[g_nfont - 1]);
 }
 
 /* ------------------------------------------------------------ plate helpers */
@@ -736,13 +761,18 @@ static int pressed(int vk)
     return down && !was;
 }
 
-static int step(int value, int dir, int max)
+static int step(int value, int dir, const BYTE *list, int n)
 {
-    if (value < 0) return dir > 0 ? 0 : max;          /* first press: start at an end */
-    value += dir;
-    if (value > max) value = 0;
-    if (value < 0) value = max;
-    return value;
+    int i = -1;
+    for (int k = 0; k < n; k++) if (list[k] == value) { i = k; break; }
+    if (i < 0) {                                       /* not set yet, or not in the list */
+        if (value < 0) return dir > 0 ? list[0] : list[n - 1];
+        for (i = 0; i < n && list[i] < value; i++) {}   /* nearest in the direction pressed */
+        if (dir > 0) return i < n ? list[i] : list[0];
+        return i > 0 ? list[i - 1] : list[n - 1];
+    }
+    i = (i + dir + n) % n;
+    return list[i];
 }
 
 static void poll_edit(void)
@@ -765,13 +795,13 @@ static void poll_edit(void)
 
     int picDir = pressed(VK_PRIOR) ? 1 : pressed(VK_NEXT) ? -1 : 0;     /* Page Up / Page Down */
     if (picDir) {
-        g_pic = step(g_pic, picDir, g_maxPic);
+        g_pic = step(g_pic, picDir, g_picList, g_npic);
         set_picture(g_editCar, g_pic);                                     /* with its preset layout and font */
         if (g_font >= 0) C2(LCP_TEXT_TEXTURE, g_editCar, g_font);        /* a font you picked wins */
         changed = 1;
     }
     int fontDir = pressed(VK_HOME) ? 1 : pressed(VK_END) ? -1 : 0;
-    if (fontDir) { g_font = step(g_font, fontDir, g_maxFont); C2(LCP_TEXT_TEXTURE, g_editCar, g_font); changed = 1; }
+    if (fontDir) { g_font = step(g_font, fontDir, g_fontList, g_nfont); C2(LCP_TEXT_TEXTURE, g_editCar, g_font); changed = 1; }
 
     if (changed) show_edit();
 }
@@ -850,6 +880,7 @@ static DWORD WINAPI init_thread(LPVOID unused)
     (void)unused;
     load_settings();
     load_styles();
+    build_lists();
     load_records();
 
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA(NULL);

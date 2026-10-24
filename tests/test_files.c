@@ -48,6 +48,15 @@ int main(void)
               "picture %d layout %f %f %f %f", exp[i].pic, s->sx, s->sy, s->ox, s->oy);
         CHECK(feq(s->r, exp[i].r) && feq(s->g, exp[i].g) && feq(s->b, exp[i].b), "picture %d tint", exp[i].pic);
     }
+    build_lists();
+    CHECK(g_npic == 5 && g_picList[0] == 0 && g_picList[1] == 2 && g_picList[4] == 24, "picture list (%d)", g_npic);
+    CHECK(g_nfont == 4 && g_fontList[0] == 0 && g_fontList[1] == 2 && g_fontList[3] == 4, "font list (%d)", g_nfont);
+    CHECK(step(-1, 1, g_picList, g_npic) == 0 && step(-1, -1, g_picList, g_npic) == 24, "first press starts at an end");
+    CHECK(step(2, 1, g_picList, g_npic) == 12 && step(12, -1, g_picList, g_npic) == 2, "stepping skips unused pictures");
+    CHECK(step(24, 1, g_picList, g_npic) == 0 && step(0, -1, g_picList, g_npic) == 24, "stepping wraps around");
+    CHECK(step(5, 1, g_picList, g_npic) == 12 && step(5, -1, g_picList, g_npic) == 2, "a value outside the list goes to the nearest");
+    g_maxPic = 3; build_lists(); CHECK(g_npic == 4 && g_picList[3] == 3, "MaxPicture override");
+    g_maxPic = -1; build_lists();
     CHECK(!g_styles[100].have, "picture 100 shouldn't exist");
     int nstyles = 0; for (int i = 0; i < 254; i++) nstyles += g_styles[i].have;
     printf("styles loaded: %d pictures\n", nstyles);
