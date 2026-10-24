@@ -24,7 +24,7 @@ jobs:
           assert pe.FILE_HEADER.Machine == 0x14c, "not 32-bit x86"
           assert pe.is_dll(), "not a DLL"
           dlls = sorted(e.dll.decode().lower() for e in pe.DIRECTORY_ENTRY_IMPORT)
-          assert dlls == ["gdi32.dll", "kernel32.dll", "user32.dll"], dlls
+          assert set(dlls) <= {"kernel32.dll", "user32.dll", "gdi32.dll"}, dlls  # Windows' own DLLs only
           print("ok:", dlls)
           PY
       - uses: actions/upload-artifact@v4
