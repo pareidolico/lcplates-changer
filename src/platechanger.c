@@ -9,9 +9,9 @@
  *   - Hooks the game window's message handler. The hotkey is handled there,
  *     on the game's main thread between frames, where FusionFix also calls
  *     script commands from.
- *   - The new plate is typed in-game: it shows in the subtitle line while
- *     you type, and your controls are paused until you press Enter (save)
- *     or the hotkey again (cancel).
+ *   - Editing happens in-game: the plate changes on the car as you type,
+ *     Page Up/Down step through plate pictures, Home/End through fonts.
+ *     Your controls are paused until you press Enter or the hotkey again.
  *   - Uses LibertyCityPlates' own script commands to write the plate.
  *
  * Settings: PlateChanger.ini next to this file. Log: PlateChanger.log.
@@ -173,6 +173,7 @@ static void show(const char *text)
 
 /* ------------------------------------------------------------ settings */
 static UINT g_vk = VK_F11;
+static int g_maxPic = 24, g_maxFont = 4;
 static int g_needShift, g_needCtrl, g_needAlt;
 
 static void load_settings(void)
@@ -201,6 +202,11 @@ static void load_settings(void)
         }
         p++;
     }
+    g_maxPic = (int)GetPrivateProfileIntA("PlateChanger", "MaxPicture", 24, g_iniPath);
+    g_maxFont = (int)GetPrivateProfileIntA("PlateChanger", "MaxFont", 4, g_iniPath);
+    if (g_maxPic < 0 || g_maxPic > 253) g_maxPic = 24;
+    if (g_maxFont < 0 || g_maxFont > 253) g_maxFont = 4;
+    plog("pictures 0-%d, fonts 0-%d", g_maxPic, g_maxFont);
     plog("hotkey: %s%s%svk 0x%02X", g_needCtrl ? "Ctrl+" : "", g_needAlt ? "Alt+" : "", g_needShift ? "Shift+" : "", g_vk);
 }
 
@@ -215,6 +221,8 @@ static int g_controlWasOn;
 static int g_restorePending;    /* give controls back once Enter / the hotkey is released */
 static char g_text[13];
 static int g_len;
+static int g_textTouched;
+static int g_pic, g_font;          /* -1 = not changed (the current value can't be read) */
 static BYTE g_keyPrev[256];
 static DWORD g_lastShown;
 
@@ -230,20 +238,19 @@ static int to_plate_char(char c, BYTE *out)
 
 static void show_edit(void)
 {
-    char line[128];
-    wsprintfA(line, "New plate: %s_    Enter = save, F11 = cancel", g_text);
+    char line[160], pic[8], font[8];
+    if (g_pic < 0) lstrcpyA(pic, "-"); else wsprintfA(pic, "%d", g_pic);
+    if (g_font < 0) lstrcpyA(font, "-"); else wsprintfA(font, "%d", g_font);
+    wsprintfA(line, "Plate: %s_   Picture %s (PgUp/PgDn)   Font %s (Home/End)   Enter = done",
+              g_textTouched ? g_text : "(unchanged)", pic, font);
     lstrcpynA(g_msg, line, sizeof(g_msg));
     C4(PRINT_STRING_WITH_LITERAL_STRING_NOW, g_gxtString, g_msg, 60000, 1);
     g_lastShown = GetTickCount();
 }
 
-static void end_edit(int save)
+static void apply_text(void)
 {
-    g_editing = 0;
-    if (g_controlWasOn) g_restorePending = 1;
-    if (!save) { show("Plate not changed."); plog("cancelled"); return; }
-    if (g_len == 0) { show("Plate not changed (nothing typed)."); return; }
-    if (!C1(DOES_VEHICLE_EXIST, g_editCar)) { show("The car is gone, plate not changed."); return; }
+    if (!C1(DOES_VEHICLE_EXIST, g_editCar)) return;
     BYTE ch[12];
     for (int i = 0; i < 12; i++) ch[i] = 0x25;
     for (int i = 0; i < g_len; i++) to_plate_char(g_text[i], &ch[i]);
@@ -251,8 +258,18 @@ static void end_edit(int save)
     C5(LCP_TEXT_4567, g_editCar, ch[4], ch[5], ch[6], ch[7]);
     C5(LCP_TEXT_891011, g_editCar, ch[8], ch[9], ch[10], ch[11]);
     C2(LCP_TEXT_LENGTH, g_editCar, g_len);
-    char done[64];
-    wsprintfA(done, "Plate changed to %s", g_text);
+}
+
+static void end_edit(void)
+{
+    g_editing = 0;
+    if (g_controlWasOn) g_restorePending = 1;
+    if (!g_textTouched && g_pic < 0 && g_font < 0) { show("Plate not changed."); plog("nothing changed"); return; }
+    char done[96], part[32];
+    lstrcpyA(done, "Plate saved");
+    if (g_textTouched) { wsprintfA(part, ": %s", g_text); lstrcatA(done, part); }
+    if (g_pic >= 0) { wsprintfA(part, ", picture %d", g_pic); lstrcatA(done, part); }
+    if (g_font >= 0) { wsprintfA(part, ", font %d", g_font); lstrcatA(done, part); }
     show(done);
     plog("%s", done);
 }
@@ -291,7 +308,8 @@ static void start_edit(void)
     plog("changing plate of vehicle handle %lu", car);
 
     g_editCar = car; g_editPlayer = player;
-    g_text[0] = 0; g_len = 0;
+    g_text[0] = 0; g_len = 0; g_textTouched = 0;
+    g_pic = -1; g_font = -1;
     g_controlWasOn = C1(IS_PLAYER_CONTROL_ON, player) ? 1 : 0;
     if (g_controlWasOn) C2(SET_PLAYER_CONTROL, player, 0);   /* typing shouldn't drive the car */
     for (int k = 0; k < 256; k++) g_keyPrev[k] = (GetAsyncKeyState(k) & 0x8000) ? 1 : 0;
@@ -307,20 +325,38 @@ static int pressed(int vk)
     return down && !was;
 }
 
+static int step(int value, int dir, int max)
+{
+    if (value < 0) return dir > 0 ? 0 : max;          /* first press: start at an end */
+    value += dir;
+    if (value > max) value = 0;
+    if (value < 0) value = max;
+    return value;
+}
+
 static void poll_edit(void)
 {
-    if (game_paused()) { end_edit(0); return; }
+    if (game_paused()) { end_edit(); return; }
+    if (!C1(DOES_VEHICLE_EXIST, g_editCar)) { g_editing = 0; if (g_controlWasOn) g_restorePending = 1; show("The car is gone."); return; }
     int changed = GetTickCount() - g_lastShown > 15000;   /* keep the prompt on screen */
-    if (pressed(VK_RETURN)) { end_edit(1); return; }
-    if (pressed((int)g_vk)) { end_edit(0); return; }
-    if (pressed(VK_BACK) && g_len > 0) { g_text[--g_len] = 0; changed = 1; }
+    if (pressed(VK_RETURN) || pressed((int)g_vk)) { end_edit(); return; }
+
+    int textChanged = 0;
+    if (pressed(VK_BACK) && g_len > 0) { g_text[--g_len] = 0; textChanged = 1; }
     char add = 0;
     for (int k = 'A'; k <= 'Z' && !add; k++) if (pressed(k)) add = (char)k;
     for (int k = '0'; k <= '9' && !add; k++) if (pressed(k)) add = (char)k;
     for (int k = 0; k <= 9 && !add; k++) if (pressed(VK_NUMPAD0 + k)) add = (char)('0' + k);
     if (!add && pressed(VK_SPACE)) add = ' ';
     if (!add && pressed(VK_MULTIPLY)) add = '*';
-    if (add && g_len < 12) { g_text[g_len++] = add; g_text[g_len] = 0; changed = 1; }
+    if (add && g_len < 12) { g_text[g_len++] = add; g_text[g_len] = 0; textChanged = 1; }
+    if (textChanged) { g_textTouched = 1; apply_text(); changed = 1; }
+
+    int picDir = pressed(VK_PRIOR) ? 1 : pressed(VK_NEXT) ? -1 : 0;     /* Page Up / Page Down */
+    if (picDir) { g_pic = step(g_pic, picDir, g_maxPic); C2(LCP_PLATE_TEXTURE, g_editCar, g_pic); changed = 1; }
+    int fontDir = pressed(VK_HOME) ? 1 : pressed(VK_END) ? -1 : 0;
+    if (fontDir) { g_font = step(g_font, fontDir, g_maxFont); C2(LCP_TEXT_TEXTURE, g_editCar, g_font); changed = 1; }
+
     if (changed) show_edit();
 }
 
@@ -457,7 +493,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID res)
         wsprintfA(g_logPath, "%s\\PlateChanger.log", g_dir);
         wsprintfA(g_iniPath, "%s\\PlateChanger.ini", g_dir);
         DeleteFileA(g_logPath);
-        plog("PlateChanger 1.1 loaded");
+        plog("PlateChanger 1.2 loaded");
         HANDLE t = CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }
