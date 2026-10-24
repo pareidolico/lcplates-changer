@@ -2,12 +2,10 @@ name: build
 
 on:
   push:
-    branches: ["**"]
-    tags: ["v*"]
   pull_request:
 
 permissions:
-  contents: write   # lets tag builds publish a release
+  contents: write   # lets a push to main publish a release for a new version
 
 jobs:
   build:
@@ -38,15 +36,19 @@ jobs:
           path: |
             build/PlateChanger.asi
             PlateChanger.ini
-      - name: Package release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release this version if it's new
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VER=$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' src/platechanger.c)
+          TAG="v$VER"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already released"
+            exit 0
+          fi
           mkdir -p dist/PlateChanger
           cp build/PlateChanger.asi PlateChanger.ini README.md LICENSE dist/PlateChanger/
-          cd dist && zip -r "PlateChanger-${GITHUB_REF_NAME}.zip" PlateChanger
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/PlateChanger-${{ github.ref_name }}.zip
-          body_path: RELEASE_NOTES.md
+          (cd dist && zip -r "PlateChanger-$TAG.zip" PlateChanger)
+          gh release create "$TAG" "dist/PlateChanger-$TAG.zip" --target "$GITHUB_SHA" \
+            --title "PlateChanger $VER" --notes-file RELEASE_NOTES.md
