@@ -9,7 +9,9 @@
  *   - Hooks the game window's message handler. The hotkey is handled there,
  *     on the game's main thread between frames, where FusionFix also calls
  *     script commands from.
- *   - While the little "Change plate" box is open the game waits.
+ *   - The new plate is typed in-game: it shows in the subtitle line while
+ *     you type, and your controls are paused until you press Enter (save)
+ *     or the hotkey again (cancel).
  *   - Uses LibertyCityPlates' own script commands to write the plate.
  *
  * Settings: PlateChanger.ini next to this file. Log: PlateChanger.log.
@@ -151,6 +153,8 @@ static DWORD call(DWORD hash, int argc, DWORD a0, DWORD a1, DWORD a2, DWORD a3, 
 #define GET_PLAYERS_LAST_CAR_NO_SAVE         0x12067E8D
 #define DOES_VEHICLE_EXIST                   0x67A42263
 #define PRINT_STRING_WITH_LITERAL_STRING_NOW 0x0CA539D6
+#define SET_PLAYER_CONTROL                   0x1A6203EA
+#define IS_PLAYER_CONTROL_ON                 0x30CD2F1F
 /* LibertyCityPlates commands (registered by LibertyCityPlates.asi) */
 #define LCP_TEXT_0123                        0x09DED943
 #define LCP_TEXT_4567                        0x09DE9587
@@ -200,101 +204,20 @@ static void load_settings(void)
     plog("hotkey: %s%s%svk 0x%02X", g_needCtrl ? "Ctrl+" : "", g_needAlt ? "Alt+" : "", g_needShift ? "Shift+" : "", g_vk);
 }
 
-/* ------------------------------------------------------------ the dialog */
-#define ID_TEXT    101
-#define ID_PIC     102
-#define ID_FONT    103
-
+/* ------------------------------------------------------------ in-game editing */
 static HWND g_game;
-static HINSTANCE g_inst;
 static WNDPROC g_origProc;
 static int g_unicode;
 
-static char g_text[16], g_pic[8], g_font[8];
-static int g_dlgDone, g_dlgOk;
+static int g_editing;            /* typing a plate right now */
+static DWORD g_editCar, g_editPlayer;
+static int g_controlWasOn;
+static int g_restorePending;    /* give controls back once Enter / the hotkey is released */
+static char g_text[13];
+static int g_len;
+static BYTE g_keyPrev[256];
+static DWORD g_lastShown;
 
-static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l)
-{
-    switch (m) {
-    case WM_COMMAND:
-        if (LOWORD(w) == IDOK) {
-            GetDlgItemTextA(h, ID_TEXT, g_text, sizeof(g_text));
-            GetDlgItemTextA(h, ID_PIC, g_pic, sizeof(g_pic));
-            GetDlgItemTextA(h, ID_FONT, g_font, sizeof(g_font));
-            g_dlgOk = 1; g_dlgDone = 1; DestroyWindow(h); return 0;
-        }
-        if (LOWORD(w) == IDCANCEL) { g_dlgDone = 1; DestroyWindow(h); return 0; }
-        break;
-    case WM_CLOSE:
-        g_dlgDone = 1; DestroyWindow(h); return 0;
-    }
-    return DefWindowProcA(h, m, w, l);
-}
-
-static HWND add(HWND parent, const char *cls, const char *text, DWORD style, int x, int y, int w, int hgt, int id)
-{
-    HWND c = CreateWindowExA(cls[0] == 'E' ? WS_EX_CLIENTEDGE : 0, cls, text, WS_CHILD | WS_VISIBLE | style,
-                             x, y, w, hgt, parent, (HMENU)(INT_PTR)id, g_inst, NULL);
-    SendMessageA(c, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    return c;
-}
-
-static int run_dialog(void)
-{
-    static int registered;
-    HINSTANCE hi = g_inst;
-    if (!registered) {
-        WNDCLASSA wc;
-        ZeroMemory(&wc, sizeof(wc));
-        wc.lpfnWndProc = DlgProc;
-        wc.hInstance = hi;
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = "PlateChangerDlg";
-        RegisterClassA(&wc);
-        registered = 1;
-    }
-    RECT gr; GetWindowRect(g_game, &gr);
-    int W = 300, H = 170;
-    int x = gr.left + ((gr.right - gr.left) - W) / 2, y = gr.top + ((gr.bottom - gr.top) - H) / 2;
-    HWND d = CreateWindowExA(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, "PlateChangerDlg", "Change plate",
-                             WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, W, H, g_game, NULL, hi, NULL);
-    if (!d) { plog("couldn't create the dialog (%lu)", GetLastError()); return 0; }
-    add(d, "STATIC", "Plate text (A-Z, 0-9, space; * = state emblem):", 0, 12, 10, 270, 16, -1);
-    HWND e = add(d, "EDIT", "", WS_TABSTOP | ES_UPPERCASE | ES_AUTOHSCROLL, 12, 28, 270, 22, ID_TEXT);
-    SendMessageA(e, EM_SETLIMITTEXT, 12, 0);
-    add(d, "STATIC", "Plate picture # (blank = keep):", 0, 12, 60, 190, 16, -1);
-    HWND p = add(d, "EDIT", "", WS_TABSTOP | ES_NUMBER, 212, 57, 70, 22, ID_PIC);
-    SendMessageA(p, EM_SETLIMITTEXT, 3, 0);
-    add(d, "STATIC", "Font # (blank = keep):", 0, 12, 86, 190, 16, -1);
-    HWND f = add(d, "EDIT", "", WS_TABSTOP | ES_NUMBER, 212, 83, 70, 22, ID_FONT);
-    SendMessageA(f, EM_SETLIMITTEXT, 3, 0);
-    add(d, "BUTTON", "OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 116, 112, 80, 24, IDOK);
-    add(d, "BUTTON", "Cancel", WS_TABSTOP, 202, 112, 80, 24, IDCANCEL);
-
-    g_text[0] = g_pic[0] = g_font[0] = 0;
-    g_dlgDone = g_dlgOk = 0;
-    EnableWindow(g_game, FALSE);
-    ShowWindow(d, SW_SHOW);
-    SetForegroundWindow(d);
-    SetFocus(e);
-
-    MSG msg;
-    while (!g_dlgDone) {
-        BOOL r = GetMessageA(&msg, NULL, 0, 0);
-        if (r == 0) { PostQuitMessage((int)msg.wParam); break; }
-        if (r < 0) break;
-        if (!IsWindow(d) || !IsDialogMessageA(d, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
-        }
-    }
-    EnableWindow(g_game, TRUE);
-    SetForegroundWindow(g_game);
-    return g_dlgOk;
-}
-
-/* ------------------------------------------------------------ the action */
 static int to_plate_char(char c, BYTE *out)
 {
     if (c >= 'a' && c <= 'z') c -= 32;
@@ -305,20 +228,52 @@ static int to_plate_char(char c, BYTE *out)
     return 0;
 }
 
-static int parse_num(const char *s, int *v)
+static void show_edit(void)
 {
-    if (!s[0]) return 0;
-    int n = 0;
-    for (; *s; s++) { if (*s < '0' || *s > '9') return 0; n = n * 10 + (*s - '0'); }
-    *v = n; return 1;
+    char line[128];
+    wsprintfA(line, "New plate: %s_    Enter = save, F11 = cancel", g_text);
+    lstrcpynA(g_msg, line, sizeof(g_msg));
+    C4(PRINT_STRING_WITH_LITERAL_STRING_NOW, g_gxtString, g_msg, 60000, 1);
+    g_lastShown = GetTickCount();
 }
 
-static void change_plate(void)
+static void end_edit(int save)
 {
-    if ((g_pUserPause && *g_pUserPause) || (g_pScriptPause && *g_pScriptPause)) {
-        plog("hotkey ignored: game is paused or loading");
-        return;
-    }
+    g_editing = 0;
+    if (g_controlWasOn) g_restorePending = 1;
+    if (!save) { show("Plate not changed."); plog("cancelled"); return; }
+    if (g_len == 0) { show("Plate not changed (nothing typed)."); return; }
+    if (!C1(DOES_VEHICLE_EXIST, g_editCar)) { show("The car is gone, plate not changed."); return; }
+    BYTE ch[12];
+    for (int i = 0; i < 12; i++) ch[i] = 0x25;
+    for (int i = 0; i < g_len; i++) to_plate_char(g_text[i], &ch[i]);
+    C5(LCP_TEXT_0123, g_editCar, ch[0], ch[1], ch[2], ch[3]);
+    C5(LCP_TEXT_4567, g_editCar, ch[4], ch[5], ch[6], ch[7]);
+    C5(LCP_TEXT_891011, g_editCar, ch[8], ch[9], ch[10], ch[11]);
+    C2(LCP_TEXT_LENGTH, g_editCar, g_len);
+    char done[64];
+    wsprintfA(done, "Plate changed to %s", g_text);
+    show(done);
+    plog("%s", done);
+}
+
+static int game_paused(void)
+{
+    return (g_pUserPause && *g_pUserPause) || (g_pScriptPause && *g_pScriptPause);
+}
+
+static void restore_controls_when_ready(void)
+{
+    if (!g_restorePending || game_paused()) return;
+    if ((GetAsyncKeyState(VK_RETURN) & 0x8000) || (GetAsyncKeyState((int)g_vk) & 0x8000)) return;
+    g_restorePending = 0;
+    C2(SET_PLAYER_CONTROL, g_editPlayer, 1);
+}
+
+static void start_edit(void)
+{
+    if (g_restorePending) return;
+    if (game_paused()) { plog("hotkey ignored: game is paused or loading"); return; }
     g_missing = 0;
     DWORD player = C1(CONVERT_INT_TO_PLAYERINDEX, C0(GET_PLAYER_ID));
     if (g_missing) return;
@@ -335,34 +290,38 @@ static void change_plate(void)
     if (!car || !C1(DOES_VEHICLE_EXIST, car)) { show("PlateChanger: no car to change. Get in one first."); return; }
     plog("changing plate of vehicle handle %lu", car);
 
-    if (!run_dialog()) { plog("cancelled"); return; }
+    g_editCar = car; g_editPlayer = player;
+    g_text[0] = 0; g_len = 0;
+    g_controlWasOn = C1(IS_PLAYER_CONTROL_ON, player) ? 1 : 0;
+    if (g_controlWasOn) C2(SET_PLAYER_CONTROL, player, 0);   /* typing shouldn't drive the car */
+    for (int k = 0; k < 256; k++) g_keyPrev[k] = (GetAsyncKeyState(k) & 0x8000) ? 1 : 0;
+    g_editing = 1;
+    show_edit();
+}
 
-    BYTE ch[12]; int n = 0;
-    for (const char *s = g_text; *s && n < 12; s++) {
-        if (!to_plate_char(*s, &ch[n])) { show("PlateChanger: only A-Z, 0-9, spaces and * are allowed."); return; }
-        n++;
-    }
-    int pic = -1, font = -1;
-    if (g_pic[0] && !parse_num(g_pic, &pic)) pic = -1;
-    if (g_font[0] && !parse_num(g_font, &font)) font = -1;
-    if (n == 0 && pic < 0 && font < 0) { plog("nothing entered"); return; }
-    if (!C1(DOES_VEHICLE_EXIST, car)) { show("PlateChanger: the car is gone."); return; }
+static int pressed(int vk)
+{
+    int down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    int was = g_keyPrev[vk];
+    g_keyPrev[vk] = (BYTE)down;
+    return down && !was;
+}
 
-    if (n > 0) {
-        for (int i = n; i < 12; i++) ch[i] = 0x25;
-        C5(LCP_TEXT_0123, car, ch[0], ch[1], ch[2], ch[3]);
-        C5(LCP_TEXT_4567, car, ch[4], ch[5], ch[6], ch[7]);
-        C5(LCP_TEXT_891011, car, ch[8], ch[9], ch[10], ch[11]);
-        C2(LCP_TEXT_LENGTH, car, n);
-    }
-    if (pic >= 0 && pic < 254) C2(LCP_PLATE_TEXTURE, car, pic);
-    if (font >= 0 && font < 254) C2(LCP_TEXT_TEXTURE, car, font);
-
-    char done[96];
-    if (n > 0) wsprintfA(done, "Plate changed to %s", g_text);
-    else lstrcpyA(done, "Plate changed");
-    show(done);
-    plog("%s (picture %d, font %d)", done, pic, font);
+static void poll_edit(void)
+{
+    if (game_paused()) { end_edit(0); return; }
+    int changed = GetTickCount() - g_lastShown > 15000;   /* keep the prompt on screen */
+    if (pressed(VK_RETURN)) { end_edit(1); return; }
+    if (pressed((int)g_vk)) { end_edit(0); return; }
+    if (pressed(VK_BACK) && g_len > 0) { g_text[--g_len] = 0; changed = 1; }
+    char add = 0;
+    for (int k = 'A'; k <= 'Z' && !add; k++) if (pressed(k)) add = (char)k;
+    for (int k = '0'; k <= '9' && !add; k++) if (pressed(k)) add = (char)k;
+    for (int k = 0; k <= 9 && !add; k++) if (pressed(VK_NUMPAD0 + k)) add = (char)('0' + k);
+    if (!add && pressed(VK_SPACE)) add = ' ';
+    if (!add && pressed(VK_MULTIPLY)) add = '*';
+    if (add && g_len < 12) { g_text[g_len++] = add; g_text[g_len] = 0; changed = 1; }
+    if (changed) show_edit();
 }
 
 /* ------------------------------------------------------------ window hook */
@@ -390,7 +349,7 @@ static void fire(void)
 {
     g_held = 1;
     g_busy = 1;
-    change_plate();
+    start_edit();
     g_busy = 0;
 }
 
@@ -399,15 +358,18 @@ static LRESULT CALLBACK HookProc(HWND h, UINT m, WPARAM w, LPARAM l)
     /* the timer has to be created from the game's own thread, so do it here */
     if (!g_timerSet) {
         g_timerSet = 1;
-        if (SetTimer(h, TIMER_ID, 50, NULL)) plog("key polling started");
+        if (SetTimer(h, TIMER_ID, 30, NULL)) plog("key polling started");
         else plog("couldn't start key polling (%lu); using key messages only", GetLastError());
     }
     if (m == WM_TIMER && w == TIMER_ID) {
+        if (g_editing) { poll_edit(); g_held = 1; return 0; }
+        restore_controls_when_ready();
         int down = (GetAsyncKeyState((int)g_vk) & 0x8000) != 0;
         if (!down) g_held = 0;
         else if (!g_held && !g_busy && GetForegroundWindow() == h && mods_ok(1)) fire();
         return 0;
     }
+    if (g_editing && (m == WM_KEYDOWN || m == WM_SYSKEYDOWN || m == WM_CHAR || m == WM_KEYUP)) return 0;
     if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && w == g_vk) {
         if (!g_held && !g_busy && mods_ok(0)) { fire(); return 0; }
         if (g_held) return 0;
@@ -488,7 +450,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID res)
     (void)res;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
-        g_inst = inst;
         GetModuleFileNameA(inst, g_dir, MAX_PATH);
         char *slash = g_dir;
         for (char *s = g_dir; *s; s++) if (*s == '\\' || *s == '/') slash = s;
@@ -496,7 +457,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID res)
         wsprintfA(g_logPath, "%s\\PlateChanger.log", g_dir);
         wsprintfA(g_iniPath, "%s\\PlateChanger.ini", g_dir);
         DeleteFileA(g_logPath);
-        plog("PlateChanger 1.0.1 loaded");
+        plog("PlateChanger 1.1 loaded");
         HANDLE t = CreateThread(NULL, 0, init_thread, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }

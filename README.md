@@ -1,6 +1,6 @@
 # lcplates-changer
 
-An in-game plate changer for **[LibertyCityPlates](https://github.com/ImpossibleEchoes/LibertyCityPlates)** in GTA IV. Press **F11** in a car, or after getting out of one, type a new plate, and it's on the car straight away.
+An in-game plate changer for **[LibertyCityPlates](https://github.com/ImpossibleEchoes/LibertyCityPlates)** in GTA IV. Press **F11** in a car, or after getting out of one, type a new plate in-game, and it's on the car straight away.
 
 It's a small `.asi` plugin. It works on Complete Edition 1.2.0.59 with [FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix), and should also work on 1.0.x/1.1.x.
 
@@ -9,19 +9,15 @@ It's a small `.asi` plugin. It works on Complete Edition 1.2.0.59 with [FusionFi
 1. Download `PlateChanger.asi` and `PlateChanger.ini` from the [latest release](../../releases/latest) (or from the newest build under **Actions**).
 2. Put both next to `LibertyCityPlates.asi` in your game folder.
 
-You need LibertyCityPlates (it provides the plate commands this plugin uses), an ASI loader (FusionFix already has one), and windowed or borderless mode so the box can appear over the game.
+You need LibertyCityPlates (it provides the plate commands this plugin uses) and an ASI loader (FusionFix already has one).
 
 ## Use
 
-Press **F11**. The game pauses and a small **Change plate** box opens:
-
-| Field | What it does |
-|---|---|
-| Plate text | Up to 12 characters: `A`–`Z`, `0`–`9`, spaces. `*` is the state emblem. |
-| Plate picture # | Optional. The `plateN` texture number in `libertycityplates.wtd`. Blank keeps the current one. |
-| Font # | Optional. The `lettersN` font number. Blank keeps the current one. |
-
-**Enter** applies, **Esc** cancels. A message at the bottom of the screen confirms the change.
+1. Press **F11** in a car, or after getting out of one. It uses the last car you drove.
+2. Type the new plate. It shows in the subtitle line at the bottom of the screen, and your controls are paused while you type.
+   - Up to 12 characters: `A`–`Z`, `0`–`9` (top row or numpad), **Space**. Numpad `*` is the state emblem.
+   - **Backspace** deletes.
+3. Press **Enter** to save, or **F11** again to cancel.
 
 The new plate stays until the car leaves the world (it streams out, you reload, or it's re-created from a garage). After that LibertyCityPlates picks a plate from `vehicles.ide` again, as usual.
 
@@ -43,8 +39,8 @@ The plugin writes `PlateChanger.log` next to itself. It records whether it found
 ## How it works
 
 - It finds the game's script command table with the same byte patterns FusionFix uses for 1.0.x and 1.2.x, and calls commands by hash.
-- It hooks the game window's message handler and checks the hotkey there, on the game's main thread between frames.
-- It calls LibertyCityPlates' own script commands (`SET_CAR_LICENSE_PLATE_TEXT_0123` = `0x09DED943` and friends, from its source) to set the text, length, plate picture and font.
+- It hooks the game window's message handler and polls the keys from a timer there, on the game's main thread between frames. Typing happens in-game, with no extra windows, so it works in fullscreen too.
+- It calls LibertyCityPlates' own script commands (`SET_CAR_LICENSE_PLATE_TEXT_0123` = `0x09DED943` and friends, from its source) to set the text and its length.
 - It's plain Win32 with no C runtime, so it depends only on `kernel32`, `user32` and `gdi32`.
 
 ## Building
